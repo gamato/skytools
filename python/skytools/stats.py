@@ -9,10 +9,10 @@
 >>> ctx.inc('count')
 >>> ctx.inc('count')
 >>> ctx2 = ctx.get_collector('sub')
->>> ctx2.put('duration', 0.5)
->>> data1 = collect_data()
+>>> ctx2.avg('duration', 0.5)
+>>> data1 = reset_stats()
 >>> ctx.inc('count', 2)
->>> ctx2.put('duration', 0.6)
+>>> ctx2.avg('duration', 0.6)
 >>> merge_stats(data1)
 >>> process_stats(True)
 {myjob.count: 4, myjob.sub.duration: 0.55}
@@ -25,6 +25,14 @@ import os.path
 
 __all__ = ['get_collector', 'process_stats', 'merge_stats', 'register_sender',
            'config_stats', 'load_stats_conf']
+
+
+class Context (object):
+    def __init__(self):
+        self.data = {}
+        self.time = time.time()
+
+_context = Context()
 
 _start = time.time()
 _state = {}
@@ -104,79 +112,101 @@ def load_stats_conf():
     else:
         config_stats(30, 'log')
 
-class StatsContext(object):
+
+class StatsContext (object):
     """Position in namespace .
     """
-    __slots__ = ['pfx']
-    def __init__(self, name):
-        if name is None:
-            self.pfx = ''
-        else:
-            self.pfx = name + '.'
-    
-    def get_collector(self, name):
-        """New collector context under this one.
-        """
-        return StatsContext(self.pfx + name)
+    __slots__ = ['ctx', 'prefix', 'delim']
 
-    def put(self, name, val):
-        """Add a value to be averaged.
+    def __init__(self, name = None, delim = '.', context = None):
+        self.ctx = context or _context
+        if name:
+            self.prefix = name + delim
+        else:
+            self.prefix = ''
+        self.delim = delim
+
+    def get_collector(self, name):
+        """ New collector context under this one.
         """
-        k = self.pfx + name
-        v = _state.setdefault(k, [0,0])
+        return StatsContext(self.prefix + name, self.delim, self.ctx)
+
+    def set(self, name, val):
+        """ Set to a value.
+        """
+        k = self.prefix + name
+        self.ctx.data[k] = val
+
+    def inc(self, name, val = 1):
+        """ Add a value to be summed.
+        """
+        k = self.prefix + name
+        self.ctx.data[k] = val + self.ctx.data.get(k, 0)
+
+    def avg(self, name, val):
+        """ Add a value to be averaged.
+        """
+        k = self.prefix + name
+        v = self.ctx.data.setdefault(k, [0,0])
         v[0] += val
         v[1] += 1
 
-    def inc(self, name, val=1):
-        """Add a value to be summed.
-        """
-        k = self.pfx + name
-        _state[k] = val + _state.get(k, 0)
+
+def _get_context (ctx):
+    if ctx is None:
+        return _context
+    elif isinstance(ctx, Context):
+        return ctx
+    elif isinstance(ctx, StatsContext):
+        return ctx.ctx
+    raise ValueError ("Wrong context passed")
 
 
-def get_collector(name):
+def get_collector (name = None):
     """Start up new namespace.
     """
-    if name is None:
-        return StatsContext(None)
-    if _prefix:
+    if name and _prefix: # XXX: what for?
         return StatsContext(_prefix + '.' + name)
     return StatsContext(name)
 
-def collect_data():
-    """Return current data, resetting it.
-    """
-    global _state
-    _cur_data = _state
-    _state = {}
-    return _cur_data
 
-def process_stats(force=False):
-    """Check if interval is over, then send stats.
+def reset_stats (context = None):
+    """ Return current data, resetting it.
     """
-    global _start
+    ctx = _get_context(context)
+    cur_data = ctx.data
+    ctx.data = {}
+    return cur_data
+
+
+def process_stats (force = False, context = None):
+    """ Check if interval is over, then send stats.
+    """
+    ctx = _get_context(context)
     now = time.time()
-    if now - _start < _interval and not force:
+    if now - ctx.time < _interval and not force:
         return
-    _start = now
+    ctx.time = now
 
     try:
-        _sender.send(collect_data())
+        _sender.send(reset_stats())
     except:
         logging.exception("Problem during stats send")
 
-def merge_stats(data):
-    """Merge one stats dict with current one.
+
+def merge_stats (data, context = None):
+    """ Merge a stats dict with current one.
     """
+    ctx = _get_context(context)
     for k, v in data.items():
         if isinstance(v, list):
-            s = _state.setdefault(k, [0,0])
+            s = ctx.data.setdefault(k, [0,0])
             s[0] += v[0]
             s[1] += v[1]
         else:
-            _state[k] = v + _state.get(k, 0)
+            ctx.data[k] = v + ctx.data.get(k, 0)
+
 
 if __name__ == '__main__':
     import doctest
     doctest.testmod()
-
