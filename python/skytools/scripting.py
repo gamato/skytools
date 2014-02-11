@@ -3,11 +3,20 @@
 
 """
 
-import sys, os, signal, optparse, time, errno, select
-import logging, logging.handlers, logging.config
+import errno
+import logging
+import logging.config
+import logging.handlers
+import optparse
+import os
+import select
+import signal
+import sys
+import time
 
 import skytools
 import skytools.skylog
+import skytools.stats
 
 try:
     import skytools.installer_config
@@ -258,8 +267,10 @@ class BaseScript(object):
         self.service_name = service_name
         self.go_daemon = 0
         self.need_reload = 0
-        self.stat_dict = {}
         self.log_level = logging.INFO
+
+        self.stats = skytools.stats.get_collector()
+        self.stat_dict = self.stats.ctx.data # limited backwards compatibility
 
         # parse command line
         parser = self.init_optparse()
@@ -457,7 +468,7 @@ class BaseScript(object):
         self.looping = 0
 
     def reload(self):
-        "Reload config."
+        """Reload config."""
         # avoid double loading on startup
         if not self.cf:
             self.cf = self.load_config()
@@ -468,6 +479,7 @@ class BaseScript(object):
         self.pidfile = self.cf.getfile("pidfile", '')
         self.loop_delay = self.cf.getfloat("loop_delay", self.loop_delay)
         self.exception_sleep = self.cf.getfloat("exception_sleep", 20)
+        self.init_stats()
 
     def hook_sighup(self, sig, frame):
         "Internal SIGHUP handler.  Minimal code here."
@@ -483,38 +495,46 @@ class BaseScript(object):
             sys.exit(1)
         self.last_sigint = t
 
+    def init_stats(self):
+        """ Configure stats handlers.
+        """
+        sh = self.cf.getlist('stats_handlers', ['log'])
+        print("** sh: %s", sh)
+
+        # prepare extra attrs to be attached to metrics
+        _extra = {
+            'job_name': self.job_name,
+            'service_name': self.service_name,
+            'hostname': skytools.skylog._hostname,
+            'hostaddr': skytools.skylog._hostaddr,
+            'type': lambda m: type(m).__name__ }
+
+        for hname in sh:
+            url = self.cf.get('stats_handler.%s.url' % hname, '')
+            elist = self.cf.getlist('stats_handler.%s.extra' % hname, [])
+            extra = dict((a, _extra[a]) for a in elist if a in _extra)
+            skytools.stats.configure_handler(url or hname, name = hname, extra_attrs = extra)
+
+            print("** url: %s", url)
+            print("** elist: %s", elist)
+            print("** extra: %s", extra)
+        # print("** hnd: %s", skytools.stats._context.handlers['tnetstr'].extra_attrs)
+
     def stat_get(self, key):
         """Reads a stat value."""
-        try:
-            value = self.stat_dict[key]
-        except KeyError:
-            value = None
-        return value
+        return self.stats.get(key)
 
     def stat_put(self, key, value):
         """Sets a stat value."""
-        self.stat_dict[key] = value
+        self.stats.set(key, value)
 
     def stat_increase(self, key, increase = 1):
         """Increases a stat value."""
-        try:
-            self.stat_dict[key] += increase
-        except KeyError:
-            self.stat_dict[key] = increase
+        self.stats.inc(key, increase)
 
     def send_stats(self):
-        "Send statistics to log."
-
-        res = []
-        for k, v in self.stat_dict.items():
-            res.append("%s: %s" % (k, v))
-
-        if len(res) == 0:
-            return
-
-        logmsg = "{%s}" % ", ".join(res)
-        self.log.info(logmsg)
-        self.stat_dict = {}
+        """Send statistics to log."""
+        skytools.stats.process_stats(force=1)
 
     def reset(self):
         "Something bad happened, reset all state."
