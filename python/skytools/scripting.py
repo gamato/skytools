@@ -269,7 +269,9 @@ class BaseScript(object):
         self.need_reload = 0
         self.log_level = logging.INFO
 
+        # init stats
         self.stats = skytools.stats.get_collector()
+        skytools.stats.configure_context(log = self.log)
         self.stat_dict = self.stats.ctx.data # limited backwards compatibility
 
         # parse command line
@@ -499,9 +501,8 @@ class BaseScript(object):
         """ Configure stats handlers.
         """
         sh = self.cf.getlist('stats_handlers', ['log'])
-        print("** sh: %s", sh)
 
-        # prepare extra attrs to be attached to metrics
+        # prepare extra attrs that could be attached to metrics
         _extra = {
             'job_name': self.job_name,
             'service_name': self.service_name,
@@ -510,15 +511,16 @@ class BaseScript(object):
             'type': lambda m: type(m).__name__ }
 
         for hname in sh:
+            # read per-handler params
             url = self.cf.get('stats_handler.%s.url' % hname, '')
             elist = self.cf.getlist('stats_handler.%s.extra' % hname, [])
-            extra = dict((a, _extra[a]) for a in elist if a in _extra)
+            extra = dict((a,v) for a,v in _extra.items() if a in elist)
+            # create new handler
             skytools.stats.configure_handler(url or hname, name = hname, extra_attrs = extra)
-
-            print("** url: %s", url)
-            print("** elist: %s", elist)
-            print("** extra: %s", extra)
-        # print("** hnd: %s", skytools.stats._context.handlers['tnetstr'].extra_attrs)
+            # customise behaviour
+            hnd = self.stats.get_handler(hname)
+            if isinstance(hnd, skytools.stats_handlers.SkyLogHandler):
+                hnd.configure(log = self.log)
 
     def stat_get(self, key):
         """Reads a stat value."""

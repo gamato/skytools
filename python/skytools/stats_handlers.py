@@ -42,18 +42,18 @@ if thread:
 else:
     _lock = None
 
-def _acquireLock():
+def _acquire_lock():
     """
     Acquire the module-level lock for serializing access to shared data.
 
-    This should be released with _releaseLock().
+    This should be released with _release_lock().
     """
     if _lock:
         _lock.acquire()
 
-def _releaseLock():
+def _release_lock():
     """
-    Release the module-level lock acquired by calling _acquireLock().
+    Release the module-level lock acquired by calling _acquire_lock().
     """
     if _lock:
         _lock.release()
@@ -71,7 +71,7 @@ class Handler (object):
         """ url is urlparse() result """
         self.name = None
         self.args = skytools.db_urldecode (url.query if url else '')
-        self.extra_attrs = {'type': lambda m: type(m).__name__} # XXX
+        self.conf = {'extra_attrs': {}}
         self.create_lock()
 
     def create_lock (self):
@@ -92,13 +92,15 @@ class Handler (object):
             self.lock.release()
 
     def configure (self, **kwargs):
-        for k,v in kwargs.items():
-            if k in ['extra_attrs']:
-                setattr(self, k, v)
+        """ Configure inessential parameters. """
+        for param, value in kwargs.items():
+            if param in ['extra_attrs']:
+                self.conf[param] = value
 
-    def enrich (self, metric):
+    def extra_attrs (self, metric):
+        """ Return additional attributes for a metric. """
         d = {}
-        for k,v in self.extra_attrs.items():
+        for k,v in self.conf['extra_attrs'].items():
             if callable(v):
                 try:
                     d[k] = v(metric)
@@ -141,7 +143,15 @@ class SkyLogHandler (Handler):
         super(SkyLogHandler, self).__init__(url)
         self.log = logging.getLogger()
 
+    def configure (self, **kwargs):
+        """ Configure inessential parameters. """
+        super(SkyLogHandler, self).configure(**kwargs)
+        for param, value in kwargs.items():
+            if param == 'log':
+                self.log = value
+
     def emit (self, data):
+        """ Output metrics in one batch (as one log record). """
         if len(data) == 0:
             return
         try:
@@ -156,7 +166,7 @@ class SkyLogHandler (Handler):
             self.handle_error(data)
 
     def output (self, s):
-        self.log.info(s)
+        self.log.info(s)  # note that LogRecord's funcName points here
 
 
 class SocketHandler (Handler):
@@ -257,7 +267,8 @@ class SocketHandler (Handler):
             d = metric.render_dict()
         except AttributeError:
             d = {'value': metric}
-        d.update(self.enrich(metric))
+        extra = self.extra_attrs(metric)
+        d.update(extra)
         d.update(**kwargs)
         s = cPickle.dumps(d, 1)
         slen = struct.pack(">L", len(s))
@@ -347,7 +358,8 @@ class UdpTNetStringsHandler (DatagramHandler):
             d = metric.render_dict()
         except AttributeError:
             d = {'value': metric}
-        d.update(self.enrich(metric))
+        extra = self.extra_attrs(metric)
+        d.update(extra)
         d.update(**kwargs)
         tnetstr = tnetstrings.dumps(d)
         return tnetstr

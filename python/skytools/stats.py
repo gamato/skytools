@@ -4,7 +4,6 @@
 ...     def output(self, txt):
 ...         print(txt)
 >>> register_handler('print', PrintSender)
->>> #config_stats(10, 'print://')
 >>> configure_handler('print://')#, args = {'interval': 60})
 >>> configure_handler('tnetstr://localhost:23232?interval=10&qaz=wsx')
 >>> configure_context(interval=10)
@@ -15,9 +14,6 @@
 2
 >>> ctx2 = ctx.get_collector('sub')
 >>> ctx2.avg('duration', 0.5)
->>> import pprint
->>> pprint.pprint(_context.__dict__)
->>> for n,h in _context.handlers.items(): print n, pprint.pprint(h.__dict__)
 >>> data1 = reset_stats()
 >>> ctx.inc('count', 2)
 >>> ctx2.avg('duration', 0.6)
@@ -93,20 +89,47 @@ class Context (object):
         self.time = time.time()
         self.interval = 30
         self.handlers = {}
+        self.log = logging.getLogger()
 
     def configure (self, **kwargs):
         for k,v in kwargs.items():
-            if k in ['interval']:
+            if k in ['interval', 'log']:
                 setattr(self, k, v)
 
+    def merge_stats (self, data):
+        """ Merge a stats dict with current one.
+        """
+        for k, v in data.iteritems():
+            try:
+                self.data[k] += v
+            except KeyError:
+                self.data[k] = v
+            except TypeError:
+                self.data[k].merge(v)
+
+    def process_stats (self, force = False):
+        """ Check if interval is over, then send stats.
+        """
+        now = time.time()
+        if not force and now - self.time < self.interval:
+            return
+        self.time = now
+        data = self.reset_stats()
+        for hname, handler in self.handlers.items():
+            try:
+                handler.process(data)
+            except:
+                self.log.exception ("Problem during stats processing [%s]", hname)
+
+    def reset_stats (self):
+        """ Return current data, resetting it.
+        """
+        cur_data = self.data
+        self.data = {}
+        return cur_data
+
+
 _context = Context()
-
-# _start = time.time()
-# _state = {}
-
-# _interval = 30
-# _sender = None
-_prefix = ''
 
 _handlers = {} # registered handler classes (by scheme)
 
@@ -123,7 +146,7 @@ def load_stats_conf():
 
 
 class StatsContext (object):
-    """Position in namespace .
+    """ Stats collector -- user level API to basic features and namespaces.
     """
     __slots__ = ['ctx', 'prefix', 'delim']
 
@@ -135,22 +158,23 @@ class StatsContext (object):
             self.prefix = ''
         self.delim = delim
 
-    def get_collector(self, name):
+    def get_collector (self, name):
         """ New collector context under this one.
         """
-        return StatsContext(self.prefix + name, self.delim, self.ctx)
+        return StatsContext (self.prefix + name, self.delim, self.ctx)
 
-    def get_metric(self, name):
-        """ Get metric.
+    def get_handler (self, name):
+        """ Return existing handler.
+        """
+        return self.ctx.handlers.get(name)
+
+    def get_metric (self, name):
+        """ Return existing metric.
         """
         k = self.prefix + name
-        try:
-            m = self.ctx.data[k]
-        except KeyError:
-            m = None
-        return m
+        return self.ctx.data.get(k)
 
-    def get(self, name):
+    def get (self, name):
         """ Get a value (simple or eval'ed).
         """
         m = self.get_metric(name)
@@ -160,13 +184,13 @@ class StatsContext (object):
             value = m
         return value
 
-    def set(self, name, value):
+    def set (self, name, value):
         """ Set to a value.
         """
         k = self.prefix + name
         self.ctx.data[k] = value
 
-    def inc(self, name, value = 1):
+    def inc (self, name, value = 1):
         """ Add a value to be summed.
         """
         k = self.prefix + name
@@ -177,7 +201,7 @@ class StatsContext (object):
         except TypeError:
             self.ctx.data[k].update(value)
 
-    def avg(self, name, value):
+    def avg (self, name, value):
         """ Add a value to be averaged.
         """
         k = self.prefix + name
@@ -198,10 +222,8 @@ def _get_context (ctx):
 
 
 def get_collector (name = None):
-    """Start up new namespace.
+    """ Start up new namespace.
     """
-    if name and _prefix: # XXX: what for?
-        return StatsContext(_prefix + '.' + name)
     return StatsContext(name)
 
 
@@ -209,38 +231,21 @@ def reset_stats (context = None):
     """ Return current data, resetting it.
     """
     ctx = _get_context(context)
-    cur_data = ctx.data
-    ctx.data = {}
-    return cur_data
+    return ctx.reset_stats()
 
 
 def process_stats (force = False, context = None):
     """ Check if interval is over, then send stats.
     """
     ctx = _get_context(context)
-    now = time.time()
-    if not force and now - ctx.time < ctx.interval:
-        return
-    ctx.time = now
-    data = reset_stats(ctx)
-    for hname, handler in ctx.handlers.items():
-        try:
-            handler.process(data)
-        except:
-            logging.exception("Problem during stats processing [%s]", hname)
+    ctx.process_stats(force=force)
 
 
 def merge_stats (data, context = None):
     """ Merge a stats dict with current one.
     """
     ctx = _get_context(context)
-    for k, v in data.iteritems():
-        try:
-            ctx.data[k] += v
-        except KeyError:
-            ctx.data[k] = v
-        except TypeError:
-            ctx.data[k].merge(v)
+    ctx.merge_stats(data)
 
 
 def register_handler (scheme, cls):
@@ -250,38 +255,33 @@ def register_handler (scheme, cls):
 
 
 def configure_context (context = None, **kwargs):
+    """ Configure per-context parameters.
+    """
     ctx = _get_context(context)
     ctx.configure(**kwargs)
 
 
-# def initialise_handler (backend, name = None, context = None):
 def configure_handler (backend, name = None, context = None, **kwargs):
-    """Set up stats backend.
+    """ Set up stats backend.
     """
     ctx = _get_context(context)
     hid = name or backend
-    hnd = None
 
     if backend.find(':') > 0:
-        logging.error("BE: %r", backend)#XXX
         t = urlparse.urlparse(backend)
-        logging.error("URL: %r", t)#XXX
         if t.scheme in _handlers:
             hnd = _handlers[t.scheme](t)
         else:
-            logging.warning("Unknown stats handler: %s", t.scheme)
+            raise Exception ("Unknown stats handler: %s" % t.scheme)
     elif backend in _handlers:
         hnd = _handlers[backend](None)
     else:
-        logging.warning("Invalid stats handler: %r", backend)
+        raise Exception ("Invalid stats handler: %r" % backend)
 
-    if not hnd:
-        hnd = SkyLogHandler('')
-
-    if name:
-        hnd.name = name
     if kwargs:
         hnd.configure(**kwargs)
+    if name:
+        hnd.name = name
     ctx.handlers[hid] = hnd
 
 
