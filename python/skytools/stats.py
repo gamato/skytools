@@ -267,6 +267,7 @@ def configure_handler (backend, name = None, context = None, **kwargs):
     ctx = _get_context(context)
     hid = name or backend
 
+    # initialise new handler instance
     if backend.find(':') > 0:
         t = urlparse.urlparse(backend)
         if t.scheme in _handlers:
@@ -278,10 +279,16 @@ def configure_handler (backend, name = None, context = None, **kwargs):
     else:
         raise Exception ("Invalid stats handler: %r" % backend)
 
+    # convenient configuration
+    if hasattr(hnd, 'log'):
+        hnd.configure(log = ctx.log)
+
+    # additional configuration
     if kwargs:
         hnd.configure(**kwargs)
     if name:
         hnd.name = name
+
     ctx.handlers[hid] = hnd
 
 

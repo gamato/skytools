@@ -517,10 +517,6 @@ class BaseScript(object):
             extra = dict((a,v) for a,v in _extra.items() if a in elist)
             # create new handler
             skytools.stats.configure_handler(url or hname, name = hname, extra_attrs = extra)
-            # customise behaviour
-            hnd = self.stats.get_handler(hname)
-            if isinstance(hnd, skytools.stats_handlers.SkyLogHandler):
-                hnd.configure(log = self.log)
 
     def stat_get(self, key):
         """Reads a stat value."""

@@ -187,11 +187,19 @@ class SocketHandler (Handler):
         self.close_on_error = 0
         self.retry_time = None
         #
-        # Exponential backoff parameters.
+        # Exponential back-off parameters.
         #
-        self.retry_start = 1.0
-        self.retry_max = 30.0
-        self.retry_factor = 2.0
+        self.conf.update(dict(
+            retry_start = 1.0,
+            retry_max = 30.0,
+            retry_factor = 2.0))
+
+    def configure (self, **kwargs):
+        """ Configure inessential parameters. """
+        super(SocketHandler, self).configure(**kwargs)
+        for param, value in kwargs.items():
+            if param in ['retry_start', 'retry_max', 'retry_factor']:
+                self.conf[param] = value
 
     def make_socket (self, timeout=1):
         """
@@ -224,11 +232,11 @@ class SocketHandler (Handler):
             except socket.error:
                 # Creation failed, so set the retry time and return.
                 if self.retry_time is None:
-                    self.retry_period = self.retry_start
+                    self.retry_period = self.conf['retry_start']
                 else:
-                    self.retry_period *= self.retry_factor
-                    if self.retry_period > self.retry_max:
-                        self.retry_period = self.retry_max
+                    self.retry_period *= self.conf['retry_factor']
+                    if self.retry_period > self.conf['retry_max']:
+                        self.retry_period = self.conf['retry_max']
                 self.retry_time = now + self.retry_period
 
     def send (self, s):
