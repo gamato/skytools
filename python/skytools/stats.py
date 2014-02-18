@@ -1,9 +1,11 @@
 """ Statistics collection.
 
+>>> import pprint
 >>> class PrintSender(SkyLogHandler):
 ...     def output(self, txt):
 ...         print(txt)
 >>> register_handler('print', PrintSender)
+>>> #c = load_stats_config( extra_attrs = {'type': "NONE"} )
 >>> configure_handler('print://')#, args = {'interval': 60})
 >>> configure_handler('tnetstr://localhost:23232?interval=10&qaz=wsx')
 >>> configure_context(interval=10)
@@ -58,16 +60,19 @@
 >>> ctx.inc('whmean', (25, 25))
 >>> ctx.inc('whmean', (10, 5))
 >>> ctx.set('tavg', GaugeTimedAvg(2))
->>> time.sleep(0.2)
->>> ctx.inc('tavg', 5)
->>> time.sleep(0.1)
+>>> #time.sleep(0.2)
+>>> #ctx.inc('tavg', 5)
+>>> #time.sleep(0.1)
 >>> merge_stats(data1)
 >>> process_stats(True)
-{myjob.count: 4, myjob.sub.duration: 0.55}
+{myjob.count: 4, myjob.gauge: 1, myjob.gmean: 30.0, myjob.hmean: 9.0, myjob.median: 2.5, myjob.midrange: 3.0, \
+myjob.mode: 1, myjob.qmean: 5.0, myjob.sub.cnt: 1, myjob.sub.duration: 0.55, myjob.tavg: 2.0, myjob.wamean: 2.6, \
+myjob.wgmean: -1.0324790671, myjob.whmean: 30.7692307692}
 """
 """
 >>> ctx.set('timer', Timer(0.2))
 """
+
 
 import logging
 import os.path
@@ -81,6 +86,11 @@ from stats_metrics import *
 
 __all__ = ['get_collector', 'process_stats', 'merge_stats', 'register_handler',
            'config_stats', 'load_stats_conf']
+
+
+def_config_files = ['skystats.ini', 'stats.ini',
+                    '~/.skystats.ini', '~/.stats.ini',
+                    '/etc/skystats.ini', '/etc/stats.ini']
 
 
 class Context (object):
@@ -132,17 +142,6 @@ class Context (object):
 _context = Context()
 
 _handlers = {} # registered handler classes (by scheme)
-
-
-def load_stats_conf():
-    fn = '/etc/stats.ini'
-    if os.path.isfile(fn):
-        cf = skytools.Config('stats', fn)
-        ival = cf.getfloat('interval')
-        backend = cf.get('backend')
-        config_stats(ival, backend)
-    else:
-        config_stats(30, 'log')
 
 
 class StatsContext (object):
@@ -290,6 +289,73 @@ def configure_handler (backend, name = None, context = None, **kwargs):
         hnd.name = name
 
     ctx.handlers[hid] = hnd
+
+
+def load_stats_config (filename = None, section_name = None, context_name = None,
+                       context_params = {}, handler_params={}, extra_attrs = {}):
+    """
+    Load statistics configuration from a file, apply user defined overrides.
+    """
+
+    def read_params (cf, plist_name, pitem_name):
+        plist = cf.getdict (plist_name, {})
+        params = {}
+        for pname, ptype in plist.items():
+            method = getattr(cf, "get" + ptype, cf.get)
+            params[pname] = method (pitem_name % pname)
+        return params
+
+    # locate config file
+
+    if filename:
+        if isinstance(filename, list):
+            flist = filename
+        else:
+            flist = [filename]
+    else:
+        flist = def_config_files
+
+    for _fn in flist:
+        fn = os.path.expanduser(_fn)
+        if os.path.isfile(fn):
+            break
+    else:
+        fn = None
+
+    if not fn:
+        raise Exception ("stats config file not found: %s" % filename)
+
+    # configure context
+
+    if context_name is None:
+        context = _context
+    else:
+        context = Context()
+
+    mcf = skytools.Config (section_name or "default", fn, ignore_defs = True)
+
+    cfg_ctx_params = read_params(mcf, "params", "param_%s")
+    context.configure(**cfg_ctx_params)
+    context.configure(**context_params)
+
+    # configure handlers
+
+    handlers = mcf.getlist("handlers", [])
+    hsprefix = mcf.get("handler_section_prefix", "handler_")
+
+    for hname in handlers:
+        # read per-handler config
+        scf = mcf.clone (hsprefix + hname)
+        url = scf.get("backend", "")
+        name = scf.get("name", "")
+        elist = scf.getlist("extra_attrs", [])
+        extra = dict((a,v) for a,v in extra_attrs.items() if a in elist)
+        hnd_params = read_params(scf, "params", "param_%s")
+        hnd_params.update(handler_params)
+        # create new handler
+        configure_handler(url or hname, name = name, context = context, extra_attrs = extra, **hnd_params)
+
+    return context
 
 
 register_handler('log', SkyLogHandler)

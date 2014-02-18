@@ -96,6 +96,9 @@ def run_single_process(runnable, daemon, pidfile):
 # logging setup
 #
 
+def_skylog_locations = ['skylog.ini', '~/.skylog.ini', '/etc/skylog.ini']
+
+_log_config_file = None
 _log_config_done = 0
 _log_init_done = {}
 
@@ -116,7 +119,7 @@ def _load_log_config(fn, defs):
 
 def _init_log(job_name, service_name, cf, log_level, is_daemon):
     """Logging setup happens here."""
-    global _log_init_done, _log_config_done
+    global _log_init_done, _log_config_done, _log_config_file
 
     got_skylog = 0
     use_skylog = cf.getint("use_skylog", default_skylog)
@@ -129,14 +132,13 @@ def _init_log(job_name, service_name, cf, log_level, is_daemon):
 
     # load logging config if needed
     if use_skylog and not _log_config_done:
-        # python logging.config braindamage:
-        # cannot specify external classess without such hack
+        # python logging.config brain damage:
+        # cannot specify external classes without such hack
         logging.skylog = skytools.skylog
         skytools.skylog.set_service_name(service_name, job_name)
 
         # load general config
-        flist = cf.getlist('skylog_locations',
-                           ['skylog.ini', '~/.skylog.ini', '/etc/skylog.ini'])
+        flist = cf.getlist('skylog_locations', def_skylog_locations)
         for fn in flist:
             fn = os.path.expanduser(fn)
             if os.path.isfile(fn):
@@ -145,6 +147,7 @@ def _init_log(job_name, service_name, cf, log_level, is_daemon):
                 got_skylog = 1
                 break
         _log_config_done = 1
+        _log_config_file = fn
         if not got_skylog:
             sys.stderr.write("skylog.ini not found!\n")
             sys.exit(1)
@@ -306,6 +309,9 @@ class BaseScript(object):
 
         # init logging
         _init_log(self.job_name, self.service_name, self.cf, self.log_level, self.go_daemon)
+
+        # load statistics configuration
+        self.init_stats()
 
         # send signal, if needed
         if self.options.cmd == "kill":
@@ -471,17 +477,22 @@ class BaseScript(object):
 
     def reload(self):
         """Reload config."""
+        reloaded = False
         # avoid double loading on startup
         if not self.cf:
             self.cf = self.load_config()
         else:
             self.cf.reload()
             self.log.info ("Config reloaded")
+            reloaded = True
+
         self.job_name = self.cf.get("job_name")
         self.pidfile = self.cf.getfile("pidfile", '')
         self.loop_delay = self.cf.getfloat("loop_delay", self.loop_delay)
         self.exception_sleep = self.cf.getfloat("exception_sleep", 20)
-        self.init_stats()
+
+        if reloaded:
+            self.init_stats()  # reload statistics configuration
 
     def hook_sighup(self, sig, frame):
         "Internal SIGHUP handler.  Minimal code here."
@@ -500,23 +511,51 @@ class BaseScript(object):
     def init_stats(self):
         """ Configure stats handlers.
         """
-        sh = self.cf.getlist('stats_handlers', ['log'])
+        configured = False
+        use_skylog = self.cf.getint('use_skylog', default_skylog)
+        use_stats_ini = self.cf.getint('use_stats_ini', 0)
 
         # prepare extra attrs that could be attached to metrics
-        _extra = {
+        extra_attrs = {
             'job_name': self.job_name,
             'service_name': self.service_name,
             'hostname': skytools.skylog._hostname,
             'hostaddr': skytools.skylog._hostaddr,
             'type': lambda m: type(m).__name__ }
 
+        # if no embedded options, try to find and use a config file
+
+        if not self.cf.has_option('stats_handlers'):
+            section = self.cf.get('stats_ini_section', 'stats')
+            if use_stats_ini:
+                # config should be found
+                flist = self.cf.getlist('stats_ini_locations', [])
+                skytools.stats.load_stats_config(
+                    filename = flist, section_name = section, extra_attrs = extra_attrs)
+                configured = True
+            elif use_skylog:
+                # config may be found
+                try:
+                    skytools.stats.load_stats_config(
+                        filename = _log_config_file, section_name = section, extra_attrs = extra_attrs)
+                except Exception, e:
+                    if not str(e).startswith("Wrong config file, no section"):
+                        raise
+                configured = True
+
+        if configured:
+            return
+        # no config file, use embedded options or defaults
+
+        sh = self.cf.getlist('stats_handlers', ['log'])
+
         for hname in sh:
             # read per-handler params
-            url = self.cf.get('stats_handler.%s.url' % hname, '')
+            hnd = self.cf.get('stats_handler.%s' % hname, '')
             elist = self.cf.getlist('stats_handler.%s.extra' % hname, [])
-            extra = dict((a,v) for a,v in _extra.items() if a in elist)
+            extra = dict((a,v) for a,v in extra_attrs.items() if a in elist)
             # create new handler
-            skytools.stats.configure_handler(url or hname, name = hname, extra_attrs = extra)
+            skytools.stats.configure_handler(hnd or hname, name = hname, extra_attrs = extra)
 
     def stat_get(self, key):
         """Reads a stat value."""
