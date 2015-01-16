@@ -263,7 +263,7 @@ class DataMaintainer (skytools.DBScript):
             if self.commit_delay > 0.0:
                 time.sleep(self.commit_delay)
             if self.sql_throttle:
-                self.throttle(tcur)
+                self.throttle(tcur, lastitem)
             self._print_count("--- Running count: %s duration: %s ---")
 
         if self.last_sigint:
@@ -314,9 +314,9 @@ class DataMaintainer (skytools.DBScript):
                 ccur.execute(self.sql_crash, item)
             raise
 
-    def throttle(self, tcur):
+    def throttle(self, tcur, item):
         while not self.last_sigint:
-            tcur.execute(self.sql_throttle)
+            tcur.execute(self.sql_throttle, item)
             _r = tcur.fetchall()
             assert len(_r) == 1 and len(_r[0]) == 1, "Result of 'throttle' query must be 1 value"
             throttle = _r[0][0]
