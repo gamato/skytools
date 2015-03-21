@@ -84,6 +84,8 @@ import os.path
 import sys
 import time
 
+import psycopg2
+
 import pkgloader
 pkgloader.require('skytools', '3.0')
 import skytools
@@ -286,7 +288,11 @@ class DataMaintainer (skytools.DBScript):
             item = bres.copy()
             for i in res:   # for each row in read query result
                 item.update(i)
-                mcur.execute(self.sql_modify, item)
+                if self.autocommit:
+                    retries, mcur = self.execute_with_retry('dbwrite', self.sql_modify, item,
+                                                            exceptions = (psycopg2.OperationalError,))
+                else:
+                    mcur.execute(self.sql_modify, item)
                 self.log.debug(mcur.query)
                 if mcur.statusmessage.startswith('SELECT'): # if select was used we can expect some result
                     mres = mcur.fetchall()
